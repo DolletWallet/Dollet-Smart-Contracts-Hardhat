@@ -1,0 +1,19 @@
+{
+  "compilerOptions": {
+    "target": "es2020",
+    "module": "commonjs",
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "strict": true,
+    "skipLibCheck": true,
+    "types": ["mocha", "node"]
+  },
+  "include": [
+    "hardhat.config.ts",
+    "./artifacts",
+    "./test",
+    "./deploy",
+    "./src",
+    "tests/**/*"
+  ]
+}
