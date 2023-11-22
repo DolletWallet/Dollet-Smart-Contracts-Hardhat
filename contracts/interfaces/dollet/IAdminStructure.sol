@@ -4,22 +4,24 @@ pragma solidity 0.8.10;
 
 /// @dev Interface for managing the super admin role.
 interface ISuperAdmin {
-    /// @dev Emitted when the super admin role is transferred.
-    /// @param oldAdmin The address of the old super admin.
-    /// @param newAdmin The address of the new super admin.
-    event SuperAdminTransfer(address oldAdmin, address newAdmin);
-
     /// @notice Returns the address of the super admin.
     /// @return The address of the super admin.
     function superAdmin() external view returns (address);
 
+    /// @notice Returns the address of the potential super admin.
+    /// @return The address of the potential super admin.
+    function potentialSuperAdmin() external view returns (address);
+
+    /// @notice Transfers the super admin role to a potential super admin address using pull-over-push pattern.
+    /// @param _potentialSuperAdmin An address of a potential super admin.
+    function transferSuperAdmin(address _potentialSuperAdmin) external;
+
+    /// @notice Accepts the super admin role by a potential super admin.
+    function acceptSuperAdmin() external;
+
     /// @notice Checks if the caller is a valid super admin.
     /// @param caller The address to check.
     function isValidSuperAdmin(address caller) external view;
-
-    /// @notice Transfers the super admin role to a new address.
-    /// @param _superAdmin The address of the new super admin.
-    function transferSuperAdmin(address _superAdmin) external;
 }
 
 /// @dev Interface for managing admin roles.

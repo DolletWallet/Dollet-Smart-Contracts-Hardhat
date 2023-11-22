@@ -2,11 +2,11 @@
 
 pragma solidity 0.8.10;
 
-import { IStrategyCalculationsTwocrypto as IStrategyCalculations } from "../../interfaces/dollet/IStrategyCalculations.sol";
+import { IStrategyCalculationsTricryptoL1 as IStrategyCalculations } from "../../interfaces/dollet/IStrategyCalculations.sol";
 import { SafeERC20Upgradeable } from "@openzeppelin/contracts-upgradeable/token/ERC20/utils/SafeERC20Upgradeable.sol";
 import { IERC20Upgradeable } from "@openzeppelin/contracts-upgradeable/token/ERC20/IERC20Upgradeable.sol";
 import { AggregatorV3Interface } from "../../interfaces/chainlink/AggregatorV3Interface.sol";
-import { IConvexBoosterL2, IConvexRewardPoolL2 } from "../../interfaces/convex/IConvex.sol";
+import { IConvexBoosterL1, IConvexRewardPoolL1 } from "../../interfaces/convex/IConvex.sol";
 import { IStrategyConvex } from "../../interfaces/dollet/IStrategyConvex.sol";
 import { IGaugeFactory } from "../../interfaces/curve/IGaugeFactory.sol";
 import { ICurveSwap } from "../../interfaces/curve/ICurveSwap.sol";
@@ -14,30 +14,31 @@ import { StratFeeManager } from "../common/StratFeeManager.sol";
 import { IQuoter } from "../../interfaces/common/IQuoter.sol";
 import { IERC20 } from "../../interfaces/common/IERC20.sol";
 import { UniV3Actions } from "../../utils/UniV3Actions.sol";
+import { IWETH } from "../../interfaces/common/IWETH.sol";
 
-/// @title Strategy intermediary to interact with defi protocols
+/// @title StrategyConvexTricryptoNativeL1
 /// @notice The StrategyConvexBicryptoL2 contract is a crucial component of a project focused on optimizing
 /// yield farming on Convex Finance. It facilitates the management of a strategy by interacting with
 /// external contracts, such as a Convex booster, a calculations contract, and a Curve swap pool. The contract
 /// allows users to deposit funds, claim rewards, and perform harvesting operations. It supports multiple tokens
 /// for deposit and incorporates checks and validations to ensure secure operations. With features like token
 /// swapping and reinvestment strategies, the contract helps users maximize their yields and earn rewards effectively.
-contract StrategyConvexBicryptoL2 is IStrategyConvex, StratFeeManager {
+contract StrategyConvexTricryptoNativeL1 is IStrategyConvex, StratFeeManager {
     using SafeERC20Upgradeable for IERC20Upgradeable;
 
-    uint256 public constant POOL_SIZE = 2; // Curve's pool size
+    uint256 public constant POOL_SIZE = 3; // Curve's pool size
 
     /// @notice Address of the booster contract
-    IConvexBoosterL2 public booster;
+    IConvexBoosterL1 public booster;
     /// @notice Address of the calculations contract
     IStrategyCalculations public calculations;
     bool public isPanicActive; // True if panic is active
     address public want; // Curve LP Token
     address public pool; // Curve swap pool
     address public depositToken; // Token used to reinvest in harvest
+    address public weth; //  Wrapped Ether token
     address public rewardPool; // Convex base reward pool
     uint256 public pid; // Convex booster poolId
-    uint256 public poolSize; // Pool size, unused after upgrade
     uint256 public depositIndex; // Index of depositToken in pool
     uint256 public lastHarvest; // Last timestamp when the harvest occurred
     uint256 public totalWantDeposits; // Total of deposits in Curve LP
@@ -51,6 +52,30 @@ contract StrategyConvexBicryptoL2 is IStrategyConvex, StratFeeManager {
     address[] private rewardTokens; // List of the reward tokens
     address[] public listAllowedDepositTokens; // List of the allowed tokens
 
+    /// @param want The address of the curve lpToken
+    /// @param pool The address of the curve swap pool
+    /// @param booster The address of the Convex booster contract
+    /// @param pid The pool ID of the Convex booster
+    /// @param depositToken The token sent to the pool to receive want
+    /// @param oracles The array of oracle token and oracle address pairs
+    /// @param depositIndex Deposit index parameter
+    /// @param defaultSlippages The default slippages for curve and Uniswap
+    /// @param rewardInfo The reward token addresses and minimum amounts for rewards
+    /// @param commonAddresses The addresses of common contracts
+    struct InitParams {
+        address want;
+        address pool;
+        address booster;
+        uint256 pid;
+        address depositToken;
+        address weth;
+        Oracle[] oracles;
+        uint256 depositIndex;
+        DefaultSlippages defaultSlippages;
+        RewardInfo rewardInfo;
+        CommonAddresses commonAddresses;
+    }
+
     /// @dev Modifier to restrict access to vault only.
     modifier onlyVault() {
         require(msg.sender == vault, "InvalidCaller");
@@ -63,58 +88,57 @@ contract StrategyConvexBicryptoL2 is IStrategyConvex, StratFeeManager {
     }
 
     /// @dev Initializes the contract
-    /// @param _want The address of the curve lpToken
-    /// @param _pool The address of the curve swap pool
-    /// @param _booster The address of the Convex booster contract
-    /// @param _pid The pool ID of the Convex booster
-    /// @param _depositToken The token sent to the pool to receive want
-    /// @param _oracles The array of oracle token and oracle address pairs
-    /// @param _depositIndex Deposit index parameter
-    /// @param _defaultSlippages The default slippages for curve and Uniswap
-    /// @param rewardInfo The reward token addresses and minimum amounts for rewards
-    /// @param _commonAddresses The addresses of common contracts
-    function initialize(
-        address _want,
-        address _pool,
-        address _booster,
-        uint256 _pid,
-        address _depositToken,
-        Oracle[] calldata _oracles,
-        uint256 _depositIndex,
-        DefaultSlippages calldata _defaultSlippages,
-        RewardInfo calldata rewardInfo,
-        CommonAddresses calldata _commonAddresses
-    ) public initializer {
-        __StratFeeManager_init(_commonAddresses);
-        require(_want != address(0), "ZeroWant");
-        require(_pool != address(0), "ZeroPool");
-        require(_booster != address(0), "ZeroBooster");
-        require(_depositToken != address(0), "ZeroDeposit");
-        require(ONE_HUNDRED >= _defaultSlippages.curve, "InvalidDefaultSlippageCurve");
-        require(ONE_HUNDRED >= _defaultSlippages.uniswap, "InvalidDefaultSlippageUniswap");
+    /// @param _initParams Initialization parameters
+    function initialize(InitParams calldata _initParams) public initializer {
+        __StratFeeManager_init(_initParams.commonAddresses);
 
-        for (uint256 i; i < _oracles.length; i++) {
-            require(_oracles[i].token != address(0), "ZeroOracleToken");
-            require(_oracles[i].oracle != address(0), "ZeroOracleOracle");
-            oracle[_oracles[i].token] = AggregatorV3Interface(_oracles[i].oracle);
+        require(_initParams.want != address(0), "ZeroWant");
+        require(_initParams.pool != address(0), "ZeroPool");
+        require(_initParams.booster != address(0), "ZeroBooster");
+        require(_initParams.depositToken != address(0), "ZeroDeposit");
+        require(_initParams.weth != address(0), "ZeroWeth");
+        require(ONE_HUNDRED >= _initParams.defaultSlippages.curve, "InvalidDefaultSlippageCurve");
+        require(
+            ONE_HUNDRED >= _initParams.defaultSlippages.uniswap,
+            "InvalidDefaultSlippageUniswap"
+        );
+
+        for (uint256 i; i < _initParams.oracles.length; i++) {
+            require(_initParams.oracles[i].token != address(0), "ZeroOracleToken");
+            require(_initParams.oracles[i].oracle != address(0), "ZeroOracleOracle");
+
+            oracle[_initParams.oracles[i].token] = AggregatorV3Interface(
+                _initParams.oracles[i].oracle
+            );
         }
-        defaultSlippageCurve = _defaultSlippages.curve;
-        defaultSlippageUniswap = _defaultSlippages.uniswap;
-        (want, pool, pid, depositToken) = (_want, _pool, _pid, _depositToken);
-        booster = IConvexBoosterL2(_booster);
-        depositIndex = _depositIndex;
-        (, , rewardPool, , ) = booster.poolInfo(_pid);
 
-        _addRewardToken(rewardInfo.tokens, rewardInfo.minAmount);
+        defaultSlippageCurve = _initParams.defaultSlippages.curve;
+        defaultSlippageUniswap = _initParams.defaultSlippages.uniswap;
+        (want, pool, pid, depositToken, weth) = (
+            _initParams.want,
+            _initParams.pool,
+            _initParams.pid,
+            _initParams.depositToken,
+            _initParams.weth
+        );
+        booster = IConvexBoosterL1(_initParams.booster);
+        depositIndex = _initParams.depositIndex;
+        (, , , rewardPool, , ) = booster.poolInfo(_initParams.pid);
+
+        _addRewardToken(_initParams.rewardInfo.tokens, _initParams.rewardInfo.minAmount);
 
         // Adding valid tokens
         for (uint256 i; i < POOL_SIZE; i++) {
-            address coin = ICurveSwap(_pool).coins(i);
+            address coin = ICurveSwap(_initParams.pool).coins(i);
             allowedDepositTokens[coin] = PoolToken(true, uint8(i));
             listAllowedDepositTokens.push(coin);
         }
+
         _modifyAllowances(type(uint).max);
     }
+
+    /// @dev Allows this contract to receive native token
+    receive() external payable {}
 
     /// @notice Deposits funds into the strategy
     /// @dev Only the vault contract can call this function
@@ -127,7 +151,7 @@ contract StrategyConvexBicryptoL2 is IStrategyConvex, StratFeeManager {
         uint256 _amount,
         address _user,
         uint256 _minWant
-    ) external whenNotPaused onlyVault {
+    ) external payable whenNotPaused onlyVault {
         require(allowedDepositTokens[_token].isAllowed, "TokenNotAllowed");
         uint256 wantBefore = balanceOfWant();
         _addLiquidityCurve(_token, _amount, _minWant);
@@ -144,28 +168,25 @@ contract StrategyConvexBicryptoL2 is IStrategyConvex, StratFeeManager {
     /// @param _amount The amount to withdraw
     /// @param _token The address of the token to withdraw
     /// @param _minCurveOutput The minimum amount of tokens to receive from Curve
+    /// @param _useEth Indicates whether to withdraw ETH or not
     function withdraw(
         address _user,
         uint256 _amount,
         address _token,
         uint256 _minCurveOutput,
-        bool
+        bool _useEth
     ) external onlyVault {
         PoolToken memory poolToken = allowedDepositTokens[_token];
         require(poolToken.isAllowed, "TokenNotAllowed");
         uint256 wantBal = balanceOfWant();
         if (wantBal < _amount) {
-            IConvexRewardPoolL2(rewardPool).withdraw(_amount - wantBal, false);
+            IConvexRewardPoolL1(rewardPool).withdrawAndUnwrap(_amount - wantBal, false);
             wantBal = balanceOfWant();
         }
         if (wantBal > _amount) wantBal = _amount;
 
         uint256 beforeTokenBal = _getTokenBalance(_token);
-        ICurveSwap(pool).remove_liquidity_one_coin(
-            wantBal,
-            int128(uint128(poolToken.index)),
-            _minCurveOutput
-        );
+        ICurveSwap(pool).remove_liquidity_one_coin(wantBal, poolToken.index, _minCurveOutput);
         // Subtracts to the user deposit
         uint256 tokenBal = _getTokenBalance(_token) - beforeTokenBal;
         uint256 _userDeposit = userWantDeposit[_user];
@@ -184,7 +205,15 @@ contract StrategyConvexBicryptoL2 is IStrategyConvex, StratFeeManager {
         tokenBal -= chargeFees(FeeType.MANAGEMENT, _token, _depositMinusRewards);
 
         // Sends tokens
-        IERC20Upgradeable(_token).safeTransfer(_user, tokenBal);
+        if (_useEth) {
+            IWETH(_token).withdraw(tokenBal);
+
+            (bool _sucess, ) = payable(_user).call{ value: tokenBal }("");
+
+            if (!_sucess) revert("TransferFailed");
+        } else {
+            IERC20Upgradeable(_token).safeTransfer(_user, tokenBal);
+        }
 
         emit Withdraw(_user, _token, tokenBal, balanceOf());
     }
@@ -195,12 +224,13 @@ contract StrategyConvexBicryptoL2 is IStrategyConvex, StratFeeManager {
     /// @param _token The address of the token to receive rewards
     /// @param _amount The amount of tokens to claim as rewards
     /// @param _minCurveOutput The minimum amount of tokens to receive from Curve
+    /// @param _useEth Indicates whether to withdraw ETH or not
     function claimRewards(
         address _user,
         address _token,
         uint256 _amount,
         uint256 _minCurveOutput,
-        bool
+        bool _useEth
     ) external onlyVault {
         PoolToken memory poolToken = allowedDepositTokens[_token];
         require(poolToken.isAllowed, "TokenNotAllowed");
@@ -210,24 +240,28 @@ contract StrategyConvexBicryptoL2 is IStrategyConvex, StratFeeManager {
         uint256 rewardAmount = _amount - _userDeposit;
         uint256 wantBal = balanceOfWant();
         if (wantBal < rewardAmount) {
-            IConvexRewardPoolL2(rewardPool).withdraw(rewardAmount - wantBal, false);
+            IConvexRewardPoolL1(rewardPool).withdrawAndUnwrap(rewardAmount - wantBal, false);
             wantBal = balanceOfWant();
         }
         if (wantBal > rewardAmount) wantBal = rewardAmount;
 
         uint256 _beforeTokenBal = _getTokenBalance(_token);
 
-        ICurveSwap(pool).remove_liquidity_one_coin(
-            wantBal,
-            int128(uint128(poolToken.index)),
-            _minCurveOutput
-        );
+        ICurveSwap(pool).remove_liquidity_one_coin(wantBal, poolToken.index, _minCurveOutput);
 
         uint256 _totalRewards = _getTokenBalance(_token) - _beforeTokenBal;
 
         _totalRewards -= chargeFees(FeeType.PERFORMANCE, _token, _totalRewards);
 
-        IERC20Upgradeable(_token).safeTransfer(_user, _totalRewards);
+        if (_useEth) {
+            IWETH(_token).withdraw(_totalRewards);
+
+            (bool _sucess, ) = payable(_user).call{ value: _totalRewards }("");
+
+            if (!_sucess) revert("TransferFailed");
+        } else {
+            IERC20Upgradeable(_token).safeTransfer(_user, _totalRewards);
+        }
 
         emit ClaimedRewards(_user, _token, _totalRewards, balanceOf());
     }
@@ -246,7 +280,7 @@ contract StrategyConvexBicryptoL2 is IStrategyConvex, StratFeeManager {
     function _harvest(bool _depositConvex) private {
         (, , , bool atLeastOneToHarvest) = getPendingToHarvest();
         if (!atLeastOneToHarvest) return;
-        IConvexRewardPoolL2(rewardPool).getReward(address(this));
+        IConvexRewardPoolL1(rewardPool).getReward();
         address _depositToken = depositToken;
         uint256 rewardTokensLength = rewardTokens.length;
         uint256 _amount = 0;
@@ -421,7 +455,7 @@ contract StrategyConvexBicryptoL2 is IStrategyConvex, StratFeeManager {
     function panic() public onlySuperAdmin {
         pause();
         isPanicActive = true;
-        IConvexRewardPoolL2(rewardPool).withdrawAll(false);
+        IConvexRewardPoolL1(rewardPool).withdrawAllAndUnwrap(false);
         emit PanicExecuted();
     }
 
@@ -434,30 +468,6 @@ contract StrategyConvexBicryptoL2 is IStrategyConvex, StratFeeManager {
         emit PauseStatusChanged(true);
     }
 
-    /// @notice Adds reward tokens to the strategy
-    /// @notice New reward tokens need to add an oracle and swap path to be reinvested
-    /// @param tokens An array of token addresses to add as reward tokens
-    /// @param minAmounts An array of minimum harvest amounts corresponding to the reward tokens
-    function _addRewardToken(address[] calldata tokens, uint256[] calldata minAmounts) private {
-        uint256 tokensLength = tokens.length;
-        require(tokensLength == minAmounts.length, "LengthsMismatch");
-        for (uint256 i; i < tokensLength; i++) {
-            address token = tokens[i];
-            require(token != address(0), "ZeroRewardToken");
-            require(token != want, "CannotUseWant");
-            require(token != rewardPool, "CannotUseRewardPool");
-            uint256 rewardTokensLength = rewardTokens.length;
-            for (uint256 j; j < rewardTokensLength; j++) {
-                require(token != rewardTokens[j], "TokenAlreadyExists");
-            }
-            rewardTokens.push(token);
-            minimumToHarvest[token] = minAmounts[i];
-            IERC20Upgradeable(token).safeApprove(unirouterV3, 0);
-            IERC20Upgradeable(token).safeApprove(unirouterV3, type(uint).max);
-            emit AddedRewardToken(token, minAmounts[i]);
-        }
-    }
-
     /// @notice Retrieves information about the pending rewards to harvest from the convex pool
     /// @return _rewardAmounts rewards the amount representing the pending rewards
     /// @return _rewardTokens addresses of the reward tokens
@@ -465,6 +475,7 @@ contract StrategyConvexBicryptoL2 is IStrategyConvex, StratFeeManager {
     /// @return _atLeastOne indicates if there is at least one reward to harvest
     function getPendingToHarvest()
         public
+        view
         returns (
             uint256[] memory _rewardAmounts,
             address[] memory _rewardTokens,
@@ -472,7 +483,7 @@ contract StrategyConvexBicryptoL2 is IStrategyConvex, StratFeeManager {
             bool _atLeastOne
         )
     {
-        return calculations.getPendingToHarvest();
+        return calculations.getPendingToHarvestView();
     }
 
     /// @notice Calculates the total balance of the strategy
@@ -490,7 +501,7 @@ contract StrategyConvexBicryptoL2 is IStrategyConvex, StratFeeManager {
     /// @notice Calculates the balance of the 'want' token in the convex pool
     /// @return The balance of the 'want' token in the convex pool
     function balanceOfPool() public view returns (uint256) {
-        return IConvexRewardPoolL2(rewardPool).balanceOf(address(this));
+        return IConvexRewardPoolL1(rewardPool).balanceOf(address(this));
     }
 
     /// @notice Charges fees (performance or management) in the specified token
@@ -518,7 +529,7 @@ contract StrategyConvexBicryptoL2 is IStrategyConvex, StratFeeManager {
     function _addLiquidityConvex() private {
         uint256 wantBal = balanceOfWant();
         if (wantBal > 0) {
-            booster.deposit(pid, wantBal);
+            booster.deposit(pid, wantBal, true);
         }
     }
 
@@ -530,7 +541,7 @@ contract StrategyConvexBicryptoL2 is IStrategyConvex, StratFeeManager {
     function _addLiquidityCurve(address _token, uint256 _amount, uint256 _minWant) private {
         uint256[POOL_SIZE] memory _amounts = calculations.getCurveAmounts(_token, _amount);
         if (paused()) IERC20Upgradeable(_token).safeApprove(pool, _amount);
-        ICurveSwap(pool).add_liquidity(_amounts, _minWant);
+        ICurveSwap(pool).add_liquidity(_amounts, _minWant, false);
     }
 
     /// @notice Modifies token allowances for the strategy
@@ -576,6 +587,30 @@ contract StrategyConvexBicryptoL2 is IStrategyConvex, StratFeeManager {
         bytes memory path = paths[_from][_to];
         require(path.length > 0, "Nonexistent Path");
         return UniV3Actions.swapV3WithDeadline(unirouterV3, path, _amount, _minSwap);
+    }
+
+    /// @notice Adds reward tokens to the strategy
+    /// @notice New reward tokens need to add an oracle and swap path to be reinvested
+    /// @param tokens An array of token addresses to add as reward tokens
+    /// @param minAmounts An array of minimum harvest amounts corresponding to the reward tokens
+    function _addRewardToken(address[] calldata tokens, uint256[] calldata minAmounts) private {
+        uint256 tokensLength = tokens.length;
+        require(tokensLength == minAmounts.length, "LengthsMismatch");
+        for (uint256 i; i < tokensLength; i++) {
+            address token = tokens[i];
+            require(token != address(0), "ZeroRewardToken");
+            require(token != want, "CannotUseWant");
+            require(token != rewardPool, "CannotUseRewardPool");
+            uint256 rewardTokensLength = rewardTokens.length;
+            for (uint256 j; j < rewardTokensLength; j++) {
+                require(token != rewardTokens[j], "TokenAlreadyExists");
+            }
+            rewardTokens.push(token);
+            minimumToHarvest[token] = minAmounts[i];
+            IERC20Upgradeable(token).safeApprove(unirouterV3, 0);
+            IERC20Upgradeable(token).safeApprove(unirouterV3, type(uint).max);
+            emit AddedRewardToken(token, minAmounts[i]);
+        }
     }
 
     /// @notice Retrieves the balance of the specified token held by the strategy

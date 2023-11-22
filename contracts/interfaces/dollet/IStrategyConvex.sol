@@ -37,6 +37,12 @@ interface IStrategyConvex {
         PERFORMANCE /// Performance fee
     }
 
+    /// @dev Event emitted when stucked tokens have been withdrawn
+    /// @param caller Address of the caller of the transaction
+    /// @param token Address of the token withdrawn
+    /// @param amount Withdrawn amount
+    event WithdrawStuckTokens(address caller, address token, uint256 amount);
+
     /// @dev Event emitted when a harvest is executed
     /// @param harvester The address of the harvester
     /// @param amount The amount harvested
@@ -123,7 +129,7 @@ interface IStrategyConvexExtended is IStrategyConvex {
 
     /// @dev Returns how many tokens the pool accepts
     /// @return The number of tokens the pool accepts
-    function poolSize() external view returns (uint256);
+    function POOL_SIZE() external view returns (uint256);
 
     /// @dev Returns the address of the calculations contract
     /// @return The address of the calculations contract
@@ -142,6 +148,11 @@ interface IStrategyConvexExtended is IStrategyConvex {
     /// @dev Executes the harvest operation on deposits, it is also the function compound, reinvests rewards
     function harvestOnDeposit() external;
 
+    /// @dev Handles the case where tokens get stuck in the Strategy. Allows the admin to send the tokens to the
+    ///      SuperAdmin
+    /// @param _token The address of the stuck token
+    function inCaseTokensGetStuck(address _token) external;
+
     /// @dev Executes a panic operation, withdraws all the rewards from convex
     function panic() external;
 
@@ -156,11 +167,13 @@ interface IStrategyConvexExtended is IStrategyConvex {
     /// @param _amount The amount of tokens to withdraw
     /// @param _token The address of the token to withdraw
     /// @param _minCurveOutput The minimum LP output from Curve
+    /// @param _useEth Indicates whether to withdraw ETH or not
     function withdraw(
         address _user,
         uint256 _amount,
         address _token,
-        uint256 _minCurveOutput
+        uint256 _minCurveOutput,
+        bool _useEth
     ) external;
 
     /// @dev Claims rewards for the user
@@ -168,11 +181,13 @@ interface IStrategyConvexExtended is IStrategyConvex {
     /// @param _token The address of the reward token
     /// @param _amount The amount of rewards to claim
     /// @param _minCurveOutput The minimum LP token output from Curve swap
+    /// @param _useEth Indicates whether to withdraw ETH or not
     function claimRewards(
         address _user,
         address _token,
         uint256 _amount,
-        uint256 _minCurveOutput
+        uint256 _minCurveOutput,
+        bool _useEth
     ) external;
 
     /// @dev Returns the address of the reward pool contract
@@ -336,9 +351,10 @@ interface IStrategyConvexExtended is IStrategyConvex {
 interface IStrategyConvexNonPayable is IStrategyConvexExtended {
     /// @dev Deposits tokens into the strategy
     /// @param _token The address of the token to deposit
+    /// @param _amount Amount of tokens to deposit
     /// @param _user The address of the user
     /// @param _minWant The minimum amount of want tokens to get from curve
-    function deposit(address _token, address _user, uint256 _minWant) external;
+    function deposit(address _token, uint256 _amount, address _user, uint256 _minWant) external;
 }
 
 /// @title IStrategyConvexPayable
@@ -346,7 +362,13 @@ interface IStrategyConvexNonPayable is IStrategyConvexExtended {
 interface IStrategyConvexPayable is IStrategyConvexExtended {
     /// @dev Deposits tokens into the strategy
     /// @param _token The address of the token to deposit
+    /// @param _amount Amount of tokens to deposit
     /// @param _user The address of the user
     /// @param _minWant The minimum amount of want tokens to get from curve
-    function deposit(address _token, address _user, uint256 _minWant) external payable;
+    function deposit(
+        address _token,
+        uint256 _amount,
+        address _user,
+        uint256 _minWant
+    ) external payable;
 }

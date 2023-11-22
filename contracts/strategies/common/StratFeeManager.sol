@@ -55,7 +55,7 @@ abstract contract StratFeeManager is PausableUpgradeable {
     /// @dev Initializes the contract.
     /// @param _commonAddresses Struct containing common addresses for initialization.
     function __StratFeeManager_init(
-        CommonAddresses memory _commonAddresses
+        CommonAddresses calldata _commonAddresses
     ) internal onlyInitializing {
         require(address(_commonAddresses.adminStructure) != address(0), "ZeroAdminStructure");
         adminStructure = _commonAddresses.adminStructure;

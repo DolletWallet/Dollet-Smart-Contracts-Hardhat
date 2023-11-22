@@ -6,7 +6,7 @@ import { ReentrancyGuardUpgradeable } from "@openzeppelin/contracts-upgradeable/
 import { SafeERC20Upgradeable } from "@openzeppelin/contracts-upgradeable/token/ERC20/utils/SafeERC20Upgradeable.sol";
 import { IERC20Upgradeable } from "@openzeppelin/contracts-upgradeable/token/ERC20/IERC20Upgradeable.sol";
 import { ERC20Upgradeable } from "@openzeppelin/contracts-upgradeable/token/ERC20/ERC20Upgradeable.sol";
-import { IStrategyConvexNonPayable as IStrategyConvex } from "../interfaces/dollet/IStrategyConvex.sol";
+import { IStrategyConvexPayable as IStrategyConvex } from "../interfaces/dollet/IStrategyConvex.sol";
 import { IAdminStructure } from "../interfaces/dollet/IAdminStructure.sol";
 import { IWETH } from "../interfaces/common/IWETH.sol";
 
@@ -15,7 +15,7 @@ import { IWETH } from "../interfaces/common/IWETH.sol";
  * @notice This is the contract that receives funds and that users interface with.
  * @notice The yield optimizing strategy itself is implemented in a separate 'Strategy.sol' contract.
  */
-contract DolletVault is ERC20Upgradeable, ReentrancyGuardUpgradeable {
+contract DolletVaultTricryptoNativeL1 is ERC20Upgradeable, ReentrancyGuardUpgradeable {
     using SafeERC20Upgradeable for IERC20Upgradeable;
 
     /**
@@ -105,7 +105,7 @@ contract DolletVault is ERC20Upgradeable, ReentrancyGuardUpgradeable {
         IStrategyConvex _strategy = strategy;
         _strategy.harvestOnDeposit();
         uint256 _before = balance();
-        _token.safeTransferFrom(msg.sender, address(_strategy), _amount);
+        _pullToken(_amount, address(_token), address(_strategy));
         _strategy.deposit(address(_token), _amount, msg.sender, _minWant);
         uint256 _after = balance();
         _amount = _after - _before;
@@ -124,28 +124,40 @@ contract DolletVault is ERC20Upgradeable, ReentrancyGuardUpgradeable {
      * tokens are burned in the process.
      * @param _token The token to be received in the withdrawal
      * @param _minCurveOutput Minimum amount tokens obtained from curve
+     * @param _useEth Indicates whether to withdraw ETH or not
      */
-    function withdrawAll(address _token, uint256 _minCurveOutput) external nonReentrant {
+    function withdrawAll(
+        address _token,
+        uint256 _minCurveOutput,
+        bool _useEth
+    ) external nonReentrant {
+        require(!_useEth || (_useEth && _token == strategy.weth()), "UseWethForEthWithdrawal");
         uint256 _shares = balanceOf(msg.sender);
         require(_shares > 0, "UserHasZeroLP");
         strategy.harvest();
         uint256 _amount = (balance() * _shares) / totalSupply();
         _burn(msg.sender, _shares);
-        strategy.withdraw(msg.sender, _amount, _token, _minCurveOutput, false);
+        strategy.withdraw(msg.sender, _amount, _token, _minCurveOutput, _useEth);
     }
 
     /**
      * @dev Claims rewards from the Vault for a specific token.
      * @param _token The address of the token to claim rewards for.
      * @param _minCurveOutput The minimum amount of tokens to receive from Curve.
+     * @param _useEth Indicates whether to withdraw ETH or not
      */
-    function claimRewards(address _token, uint256 _minCurveOutput) external nonReentrant {
+    function claimRewards(
+        address _token,
+        uint256 _minCurveOutput,
+        bool _useEth
+    ) external nonReentrant {
+        require(!_useEth || (_useEth && _token == strategy.weth()), "UseWethForEthWithdrawal");
         uint256 _shares = balanceOf(msg.sender);
         require(_shares > 0, "UserHasZeroLP");
         strategy.harvest();
         uint256 _before = balance();
         uint256 _amount = (_before * _shares) / totalSupply();
-        strategy.claimRewards(msg.sender, _token, _amount, _minCurveOutput, false);
+        strategy.claimRewards(msg.sender, _token, _amount, _minCurveOutput, _useEth);
         uint256 _after = balance();
         uint256 _wantSpent = _before - _after;
         uint256 _amountLP = (_wantSpent * totalSupply()) / _before;
@@ -374,6 +386,24 @@ contract DolletVault is ERC20Upgradeable, ReentrancyGuardUpgradeable {
      */
     function _approve(address, address, uint256) internal pure override {
         revert("DisabledApprovals");
+    }
+
+    /**
+     * @dev Validates and pulls the deposit token.
+     * @param _amount Amount of the token.
+     * @param _token Address of the token.
+     * @param _strategy Address of the strategy.
+     */
+    function _pullToken(uint256 _amount, address _token, address _strategy) private {
+        if (msg.value > 0) {
+            require(msg.value == _amount, "Value&AmountDontMatch");
+            require(_token == IStrategyConvex(_strategy).weth(), "InvalidTokenForValue");
+
+            IWETH(_token).deposit{ value: _amount }();
+            IERC20Upgradeable(_token).safeTransfer(_strategy, _amount);
+        } else {
+            IERC20Upgradeable(_token).safeTransferFrom(msg.sender, _strategy, _amount);
+        }
     }
 
     /**
